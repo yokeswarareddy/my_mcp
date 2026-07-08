@@ -1,67 +1,140 @@
 import express from "express";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import {
+  ListToolsRequestSchema,
+  CallToolRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
 import axios from "axios";
 
-// 1. Setup our core MCP Server
-const mcpServer = new Server({
-  name: "template-fetcher-server",
-  version: "1.0.0"
-}, {
-  capabilities: { tools: {} }
-});
+// ================================
+// Create MCP Server
+// ================================
+const mcpServer = new Server(
+  {
+    name: "template-fetcher-server",
+    version: "1.0.0",
+  },
+  {
+    capabilities: {
+      tools: {},
+    },
+  }
+);
 
-// 2. Define the tool
+// ================================
+// Register Tool
+// ================================
 mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
-    tools: [{
-      name: "get_template_names",
-      description: "Scrapes the target website link to get updated template names.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          url: { type: "string", description: "The full website URL containing the templates" }
+    tools: [
+      {
+        name: "get_template_names",
+        description:
+          "Fetches the HTML from a website containing ASKEM templates.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            url: {
+              type: "string",
+              description: "Website URL to fetch templates from",
+            },
+          },
+          required: ["url"],
         },
-        required: ["https://askem.ai"]
-      }
-    }]
+      },
+    ],
   };
 });
 
-// 3. Handle the actual execution logic
-mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
-  if (request.params.name === "get_template_names") {
-    try {
-      const targetUrl = request.params.arguments.url;
-      const response = await axios.get(targetUrl, {
-        headers: { 'User-Agent': 'Mozilla/5.0' }
-      });
+// ================================
+// Tool Execution
+// ================================
+mcpServer.setRequestHandler(
+  CallToolRequestSchema,
+  async (request) => {
+    if (request.params.name !== "get_template_names") {
       return {
-        content: [{ type: "text", text: `Success! Retrieved ${response.data.length} characters.` }]
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text: "Unknown tool.",
+          },
+        ],
+      };
+    }
+
+    try {
+      const { url } = request.params.arguments;
+
+      const response = await axios.get(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0",
+        },
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: response.data,
+          },
+        ],
       };
     } catch (error) {
       return {
         isError: true,
-        content: [{ type: "text", text: `Scraping failed: ${error.message}` }]
+        content: [
+          {
+            type: "text",
+            text: `Error: ${error.message}`,
+          },
+        ],
       };
     }
   }
+);
+
+// ================================
+// Express App
+// ================================
+const app = express();
+app.use(express.json());
+
+// Health Check
+app.get("/", (req, res) => {
+  res.json({
+    status: "running",
+    server: "Template Fetcher MCP Server",
+    version: "1.0.0",
+    endpoint: "/mcp",
+  });
 });
 
-// 4. Create Express app using the Unified Streamable HTTP transport
-const app = express();
-app.use(express.json()); // Essential for modern HTTP routing
+app.get("/health", (req, res) => {
+  res.json({
+    status: "healthy",
+  });
+});
 
+// ================================
+// MCP Transport
+// ================================
 const transport = new StreamableHTTPServerTransport();
+
 await mcpServer.connect(transport);
 
-// The new standard unifies everything onto a single endpoint!
+// MCP Endpoint
 app.all("/mcp", async (req, res) => {
   await transport.handleRequest(req, res);
 });
 
-const PORT = 3000;
+// ================================
+// Start Server
+// ================================
+const PORT = process.env.PORT || 3000;
+
 app.listen(PORT, () => {
-  console.log(`🚀 Modern Streamable HTTP MCP Server live on port ${PORT}!`);
+  console.log(`🚀 MCP Server running on port ${PORT}`);
 });
