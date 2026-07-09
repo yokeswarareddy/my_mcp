@@ -1,201 +1,107 @@
 import express from "express";
 import axios from "axios";
 import * as cheerio from "cheerio";
-
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-
-import {
-  ListToolsRequestSchema,
-  CallToolRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
-
-/* ==========================================================
-   MCP SERVER
-========================================================== */
-
-const mcpServer = new Server(
-  {
-    name: "template-fetcher-server",
-    version: "2.0.0",
-  },
-  {
-    capabilities: {
-      tools: {},
-    },
-  }
-);
-
-/* ==========================================================
-   EXPRESS APP
-========================================================== */
 
 const app = express();
 
+// Required middleware to parse incoming JSON bodies for the MCP transport
 app.use(express.json());
 
-/* ==========================================================
-   HEALTH ROUTES
-========================================================== */
-
+// 1. Root and Health Endpoints
 app.get("/", (req, res) => {
   res.json({
     status: "running",
     server: "Template Fetcher MCP Server",
     version: "2.0.0",
-    endpoint: "/mcp",
+    endpoint: "/mcp"
   });
 });
 
 app.get("/health", (req, res) => {
-  res.json({
-    status: "healthy",
-  });
+  res.status(200).send("OK");
 });
 
-/* ==========================================================
-   TOOL LIST
-========================================================== */
-
-mcpServer.setRequestHandler(
-  ListToolsRequestSchema,
-  async () => ({
-    tools: [
-      {
-        name: "get_template_names",
-
-        description:
-          "Fetches the latest ASKEM templates from the live website and returns their names.",
-
-        inputSchema: {
-          type: "object",
-          properties: {},
-        },
-      },
-    ],
-  })
-);
-
-/* ==========================================================
-   SCRAPE ASKEM SHOP
-========================================================== */
-
-const SHOP_URL = "https://askem.ai/shop";
-
-async function fetchTemplates() {
-  const response = await axios.get(SHOP_URL, {
-    headers: {
-      "User-Agent": "Mozilla/5.0",
-    },
-  });
-
-  const $ = cheerio.load(response.data);
-
-  const templates = [];
-  const seen = new Set();
-
-  $(".text-card-foreground").each((_, card) => {
-    const name = $(card).find("h3").first().text().trim();
-
-    if (name && !seen.has(name)) {
-      seen.add(name);
-
-      templates.push({
-        name,
-      });
-    }
-  });
-
-  templates.sort((a, b) => a.name.localeCompare(b.name));
-
-  return templates;
-}
-
-/* ==========================================================
-   TOOL EXECUTION
-========================================================== */
-
-mcpServer.setRequestHandler(
-  CallToolRequestSchema,
-  async (request) => {
-    if (request.params.name !== "get_template_names") {
-      return {
-        isError: true,
-        content: [
-          {
-            type: "text",
-            text: "Unknown tool.",
-          },
-        ],
-      };
-    }
-
-    try {
-      const templates = await fetchTemplates();
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(templates, null, 2),
-          },
-        ],
-      };
-    } catch (error) {
-      console.error(error);
-
-      return {
-        isError: true,
-        content: [
-          {
-            type: "text",
-            text: `Failed to fetch templates: ${error.message}`,
-          },
-        ],
-      };
-    }
-  }
-);
-
-/* ==========================================================
-   TRANSPORT
-========================================================== */
-
-const transport = new StreamableHTTPServerTransport();
-
-await mcpServer.connect(transport);
-
-/* ==========================================================
-   MCP ENDPOINT
-========================================================== */
-
+// 2. Main MCP Unified Endpoint (Handles GET, POST, DELETE verbs for Streamable HTTP)
 app.all("/mcp", async (req, res) => {
-  try {
-    await transport.handleRequest(req, res);
-  } catch (error) {
-    console.error("MCP Error:", error);
+  // To avoid cross-client stream leaks, instantiate a new server and transport per request
+  const mcpServer = new McpServer({
+    name: "Template Fetcher MCP Server",
+    version: "2.0.0",
+  });
 
+  // Register the get_template_names tool
+  mcpServer.tool(
+    "get_template_names",
+    {}, // Input schema is empty since no parameters are required
+    async () => {
+      try {
+        const response = await axios.get("https://askem.ai/shop", {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+          }
+        });
+        
+        const $ = cheerio.load(response.data);
+        const templates = [];
+
+        $(".text-card-foreground h3").each((_, el) => {
+          const name = $(el).text().trim();
+          if (name) {
+            templates.push({ name });
+          }
+        });
+
+        // MCP tools must return content objects wrapped inside a text block
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(templates, null, 2)
+            }
+          ]
+        };
+      } catch (error) {
+        console.error("Scraping error:", error.message);
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: "Failed to fetch templates from the source website." })
+            }
+          ],
+          isError: true
+        };
+      }
+    }
+  );
+
+  // Initialize the transport in stateless mode
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+  });
+
+  // Connect the server to the transport stream and process the current request
+  try {
+    await mcpServer.connect(transport);
+    await transport.handleRequest(req, res);
+  } catch (err) {
+    console.error("MCP Transport handling error:", err);
     if (!res.headersSent) {
-      res.status(500).json({
-        error: "Internal Server Error",
-      });
+      res.status(500).send("Internal Server Error");
     }
   }
+
+  // Clean up references when the client closes the connection
+  res.on("close", () => {
+    transport.close();
+    mcpServer.close();
+  });
 });
 
-/* ==========================================================
-   START SERVER
-========================================================== */
-
+// 3. Start Server
 const PORT = process.env.PORT || 3000;
-
 app.listen(PORT, () => {
-  console.log("");
-  console.log("====================================");
-  console.log("🚀 Template Fetcher MCP Server");
-  console.log("====================================");
-  console.log(`Version : 2.0.0`);
-  console.log(`Port    : ${PORT}`);
-  console.log(`MCP     : /mcp`);
-  console.log("====================================");
+  console.log(`Server is listening on port ${PORT}`);
 });
