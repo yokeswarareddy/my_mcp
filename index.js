@@ -6,10 +6,9 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 
 const app = express();
 
-// Required middleware to parse incoming JSON bodies for the MCP transport
+// Required to parse standard incoming JSON requests
 app.use(express.json());
 
-// 1. Root and Health Endpoints
 app.get("/", (req, res) => {
   res.json({
     status: "running",
@@ -23,18 +22,17 @@ app.get("/health", (req, res) => {
   res.status(200).send("OK");
 });
 
-// 2. Main MCP Unified Endpoint (Handles GET, POST, DELETE verbs for Streamable HTTP)
+// Main MCP Unified Endpoint
 app.all("/mcp", async (req, res) => {
-  // To avoid cross-client stream leaks, instantiate a new server and transport per request
   const mcpServer = new McpServer({
     name: "Template Fetcher MCP Server",
     version: "2.0.0",
   });
 
-  // Register the get_template_names tool
+  // Register tool
   mcpServer.tool(
     "get_template_names",
-    {}, // Input schema is empty since no parameters are required
+    {}, 
     async () => {
       try {
         const response = await axios.get("https://askem.ai/shop", {
@@ -53,7 +51,6 @@ app.all("/mcp", async (req, res) => {
           }
         });
 
-        // MCP tools must return content objects wrapped inside a text block
         return {
           content: [
             {
@@ -63,12 +60,11 @@ app.all("/mcp", async (req, res) => {
           ]
         };
       } catch (error) {
-        console.error("Scraping error:", error.message);
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ error: "Failed to fetch templates from the source website." })
+              text: JSON.stringify({ error: `Failed to scrape templates: ${error.message}` })
             }
           ],
           isError: true
@@ -77,31 +73,33 @@ app.all("/mcp", async (req, res) => {
     }
   );
 
-  // Initialize the transport in stateless mode
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: undefined,
-  });
+  // Create the server transport instance
+  const transport = new StreamableHTTPServerTransport();
 
-  // Connect the server to the transport stream and process the current request
   try {
     await mcpServer.connect(transport);
-    await transport.handleRequest(req, res);
+    
+    // CRITICAL FIX: Explicitly forward the parsed body to the transport 
+    // if express.json() has already consumed the stream
+    if (req.body && Object.keys(req.body).length > 0) {
+      await transport.handleRequest(req, res, req.body);
+    } else {
+      await transport.handleRequest(req, res);
+    }
   } catch (err) {
-    console.error("MCP Transport handling error:", err);
+    console.error("MCP Handling Error:", err);
     if (!res.headersSent) {
-      res.status(500).send("Internal Server Error");
+      res.status(500).json({ error: "Internal MCP Transport Error" });
     }
   }
 
-  // Clean up references when the client closes the connection
   res.on("close", () => {
     transport.close();
     mcpServer.close();
   });
 });
 
-// 3. Start Server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Server is listening on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
