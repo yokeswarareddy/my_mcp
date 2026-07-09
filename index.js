@@ -1,19 +1,23 @@
 import express from "express";
+import axios from "axios";
+import * as cheerio from "cheerio";
+
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+
 import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import axios from "axios";
 
-// ================================
-// Create MCP Server
-// ================================
+/* ==========================================================
+   MCP SERVER
+========================================================== */
+
 const mcpServer = new Server(
   {
     name: "template-fetcher-server",
-    version: "1.0.0",
+    version: "2.0.0",
   },
   {
     capabilities: {
@@ -22,34 +26,95 @@ const mcpServer = new Server(
   }
 );
 
-// ================================
-// Register Tool
-// ================================
-mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
+/* ==========================================================
+   EXPRESS APP
+========================================================== */
+
+const app = express();
+
+app.use(express.json());
+
+/* ==========================================================
+   HEALTH ROUTES
+========================================================== */
+
+app.get("/", (req, res) => {
+  res.json({
+    status: "running",
+    server: "Template Fetcher MCP Server",
+    version: "2.0.0",
+    endpoint: "/mcp",
+  });
+});
+
+app.get("/health", (req, res) => {
+  res.json({
+    status: "healthy",
+  });
+});
+
+/* ==========================================================
+   TOOL LIST
+========================================================== */
+
+mcpServer.setRequestHandler(
+  ListToolsRequestSchema,
+  async () => ({
     tools: [
       {
         name: "get_template_names",
+
         description:
-          "Fetches the HTML from a website containing ASKEM templates.",
+          "Fetches the latest ASKEM templates from the live website and returns their names.",
+
         inputSchema: {
           type: "object",
-          properties: {
-            url: {
-              type: "string",
-              description: "Website URL to fetch templates from",
-            },
-          },
-          required: ["url"],
+          properties: {},
         },
       },
     ],
-  };
-});
+  })
+);
 
-// ================================
-// Tool Execution
-// ================================
+/* ==========================================================
+   SCRAPE ASKEM SHOP
+========================================================== */
+
+const SHOP_URL = "https://askem.ai/shop";
+
+async function fetchTemplates() {
+  const response = await axios.get(SHOP_URL, {
+    headers: {
+      "User-Agent": "Mozilla/5.0",
+    },
+  });
+
+  const $ = cheerio.load(response.data);
+
+  const templates = [];
+  const seen = new Set();
+
+  $(".text-card-foreground").each((_, card) => {
+    const name = $(card).find("h3").first().text().trim();
+
+    if (name && !seen.has(name)) {
+      seen.add(name);
+
+      templates.push({
+        name,
+      });
+    }
+  });
+
+  templates.sort((a, b) => a.name.localeCompare(b.name));
+
+  return templates;
+}
+
+/* ==========================================================
+   TOOL EXECUTION
+========================================================== */
+
 mcpServer.setRequestHandler(
   CallToolRequestSchema,
   async (request) => {
@@ -66,29 +131,25 @@ mcpServer.setRequestHandler(
     }
 
     try {
-      const { url } = request.params.arguments;
-
-      const response = await axios.get(url, {
-        headers: {
-          "User-Agent": "Mozilla/5.0",
-        },
-      });
+      const templates = await fetchTemplates();
 
       return {
         content: [
           {
             type: "text",
-            text: response.data,
+            text: JSON.stringify(templates, null, 2),
           },
         ],
       };
     } catch (error) {
+      console.error(error);
+
       return {
         isError: true,
         content: [
           {
             type: "text",
-            text: `Error: ${error.message}`,
+            text: `Failed to fetch templates: ${error.message}`,
           },
         ],
       };
@@ -96,45 +157,45 @@ mcpServer.setRequestHandler(
   }
 );
 
-// ================================
-// Express App
-// ================================
-const app = express();
-app.use(express.json());
+/* ==========================================================
+   TRANSPORT
+========================================================== */
 
-// Health Check
-app.get("/", (req, res) => {
-  res.json({
-    status: "running",
-    server: "Template Fetcher MCP Server",
-    version: "1.0.0",
-    endpoint: "/mcp",
-  });
-});
-
-app.get("/health", (req, res) => {
-  res.json({
-    status: "healthy",
-  });
-});
-
-// ================================
-// MCP Transport
-// ================================
 const transport = new StreamableHTTPServerTransport();
 
 await mcpServer.connect(transport);
 
-// MCP Endpoint
+/* ==========================================================
+   MCP ENDPOINT
+========================================================== */
+
 app.all("/mcp", async (req, res) => {
-  await transport.handleRequest(req, res);
+  try {
+    await transport.handleRequest(req, res);
+  } catch (error) {
+    console.error("MCP Error:", error);
+
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: "Internal Server Error",
+      });
+    }
+  }
 });
 
-// ================================
-// Start Server
-// ================================
+/* ==========================================================
+   START SERVER
+========================================================== */
+
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log(`🚀 MCP Server running on port ${PORT}`);
+  console.log("");
+  console.log("====================================");
+  console.log("🚀 Template Fetcher MCP Server");
+  console.log("====================================");
+  console.log(`Version : 2.0.0`);
+  console.log(`Port    : ${PORT}`);
+  console.log(`MCP     : /mcp`);
+  console.log("====================================");
 });
