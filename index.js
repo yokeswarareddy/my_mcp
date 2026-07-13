@@ -15,11 +15,11 @@ function createMcpServer() {
 
   mcpServer.tool(
     "get_template_names",
-    "Extracts conversation template names from application bundle scripts",
+    "Extracts conversation template titles from application bundle scripts",
     {}, 
     async () => {
       try {
-        // Fetch the bundle directly since the file is valid and accessible
+        // Fetch the bundle file directly where the template objects are declared
         const response = await axios.get("https://askem.ai/assets/index-VcUb2ZvD.js", {
           headers: {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -29,41 +29,28 @@ function createMcpServer() {
         });
 
         const jsContent = response.data;
-        const uniqueNames = new Set();
+        const uniqueTitles = new Set();
 
-        // High-coverage broad regex: captures any text inside quotes to find text fragments
-        const stringPattern = /["']([^"']+)["']/g;
+        // CRITICAL FIX: The file uses 'title:' instead of 'name:' for the template items!
+        const titlePattern = /title\s*:\s*["']([^"']+)["']/g;
         let match;
 
-        // Exact match targets we know belong to your template features
-        const targetPhrases = [
-          "ask him", "ask her", "out", "apology", "forgiveness", 
-          "salary", "negotiation", "workplace", "conflict"
-        ];
-
-        while ((match = stringPattern.exec(jsContent)) !== null) {
-          const cleanStr = match[1].trim();
+        while ((match = titlePattern.exec(jsContent)) !== null) {
+          const foundTitle = match[1].trim();
           
-          // Safety filters to exclude styling tags, code syntax, or bundle errors
+          // Filter out generic boilerplate framework keywords if any match the pattern
           if (
-            cleanStr.length > 5 && 
-            cleanStr.length < 50 && 
-            !cleanStr.includes("/") && 
-            !cleanStr.includes("{") && 
-            !cleanStr.includes("<")
+            foundTitle && 
+            foundTitle.length > 2 && 
+            !foundTitle.includes("/") && 
+            !["document", "window", "element"].includes(foundTitle.toLowerCase())
           ) {
-            // Check if this string contains any of our core conversational phrases
-            const isMatch = targetPhrases.some(phrase => 
-              cleanStr.toLowerCase().includes(phrase)
-            );
-
-            if (isMatch) {
-              uniqueNames.add(cleanStr);
-            }
+            uniqueTitles.add(foundTitle);
           }
         }
 
-        const templates = Array.from(uniqueNames).map(name => ({ name }));
+        // Map the collected titles to the target structural JSON array format { name: "..." }
+        const templates = Array.from(uniqueTitles).map(title => ({ name: title }));
 
         return {
           content: [
@@ -75,12 +62,12 @@ function createMcpServer() {
         };
 
       } catch (error) {
-        console.error("Asset processing pipeline exception:", error.message);
+        console.error("Asset extraction pipeline exception:", error.message);
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ error: `Failed to harvest template structures: ${error.message}` })
+              text: JSON.stringify({ error: `Failed to extract template properties: ${error.message}` })
             }
           ],
           isError: true
