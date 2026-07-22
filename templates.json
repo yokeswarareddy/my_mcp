@@ -2,28 +2,10 @@
   {
     "category": "Relationship",
     "templates": [
-      "Ask him/her out",
-      "Confronting your loved one",
+      "THE Bloom",
+      "Reconnecting",
       "Apology and forgiveness",
-      "Relationship closure"
-    ]
-  },
-  {
-    "category": "Social",
-    "templates": [
-      "Small talk",
-      "Meeting new people",
-      "Friendly advice",
-      "Casual chat"
-    ]
-  },
-  {
-    "category": "Business",
-    "templates": [
-      "Cold call practice",
-      "Sales pitch",
-      "Negotiation",
-      "Investor pitch"
+      "Grief and Goodbyes"
     ]
   }
 ]
